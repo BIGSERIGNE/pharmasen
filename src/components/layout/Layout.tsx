@@ -30,7 +30,7 @@ export default function Layout({ requiredRole }: LayoutProps) {
         const user = session.user;
         console.log('[Layout] Utilisateur connecté :', user.id, user.email);
 
-        const { data, error: profileError } = await supabase
+        let { data, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', user.id)
