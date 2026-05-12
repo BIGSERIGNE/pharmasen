@@ -76,7 +76,10 @@ export default function Auth() {
           console.log('[Auth] Upsert profil → data:', upserted, '| error:', upsertError);
         }
 
-        const destination = role === 'pharmacist' ? '/pharma/dashboard' : '/home';
+        const destination =
+          role === 'pharmacist' ? '/pharma/dashboard' :
+          role === 'admin'      ? '/admin/dashboard' :
+                                  '/home';
         console.log('[Auth] navigate vers :', destination);
         navigate(destination);
       } else {

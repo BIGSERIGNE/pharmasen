@@ -65,7 +65,10 @@ export default function Layout({ requiredRole }: LayoutProps) {
         setProfile(data);
 
         if (requiredRole && data.role !== requiredRole) {
-          const dest = data.role === 'pharmacist' ? '/pharma/dashboard' : '/home';
+          const dest =
+            data.role === 'admin'       ? '/admin/dashboard' :
+            data.role === 'pharmacist'  ? '/pharma/dashboard' :
+                                          '/home';
           console.log(`[Layout] Rôle mismatch (attendu: ${requiredRole}, réel: ${data.role}) → navigate(${dest})`);
           navigate(dest);
           return;

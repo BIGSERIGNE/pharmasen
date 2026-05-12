@@ -7,6 +7,8 @@ import Layout from './components/layout/Layout';
 import Landing from './pages/Landing';
 import Auth from './pages/Auth';
 import Home from './pages/Home';
+import AdminDashboard from './pages/AdminDashboard';
+import ProtectedAdminRoute from './components/ProtectedAdminRoute';
 import PharmacyDetail from './pages/PharmacyDetail';
 import Cart from './pages/Cart';
 import Checkout from './pages/Checkout';
@@ -52,6 +54,11 @@ export default function App() {
               <Route path="/pharma/stock" element={<PharmaStock />} />
               <Route path="/pharma/notifications" element={<Notifications />} />
               <Route path="/pharma/profile" element={<Profile />} />
+            </Route>
+
+            {/* Admin routes */}
+            <Route element={<ProtectedAdminRoute />}>
+              <Route path="/admin/dashboard" element={<AdminDashboard />} />
             </Route>
 
             {/* Fallback */}
