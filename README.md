@@ -1,73 +1,63 @@
-# React + TypeScript + Vite
+# PHARMASEN
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Plateforme de connexion pharmacies-clients au Sénégal.
 
-Currently, two official plugins are available:
+## Installation
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+# 1. Clone le projet
+git clone https://github.com/BIGSERIGNE/pharmasen.git
+cd pharmasen
 
-## React Compiler
+# 2. Installe les dépendances
+npm install
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+# 3. Copie le fichier d'environnement
+cp .env.example .env
 
-## Expanding the ESLint configuration
+# 4. Remplis .env avec tes clés Supabase
+#    VITE_SUPABASE_URL=...
+#    VITE_SUPABASE_ANON_KEY=...
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# 5. Lance le projet
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Stack technique
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+| Technologie | Usage |
+|---|---|
+| React 19 + TypeScript | Interface utilisateur |
+| Vite | Bundler et serveur de développement |
+| Tailwind CSS + Shadcn/UI | Styles et composants |
+| Supabase | Base de données + authentification |
+| React Router DOM | Navigation |
+| TanStack Query | Gestion des données asynchrones |
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## Configuration Supabase
+
+Crée un projet sur [supabase.com](https://supabase.com) puis génère les tables suivantes :
+
+| Table | Description |
+|---|---|
+| `profiles` | Utilisateurs (client, pharmacist, admin) |
+| `pharmacies` | Pharmacies partenaires |
+| `medicines` | Médicaments par pharmacie |
+| `orders` | Commandes clients |
+| `categories` | Catégories de médicaments |
+| `notifications` | Notifications utilisateurs |
+
+## Rôles utilisateurs
+
+- **client** → accès à `/home`, recherche de pharmacies, commandes
+- **pharmacist** → accès à `/pharma/dashboard`, gestion stock et commandes
+- **admin** → accès à `/admin/dashboard`, gestion des utilisateurs
+
+## Variables d'environnement
+
+| Variable | Description |
+|---|---|
+| `VITE_SUPABASE_URL` | URL de ton projet Supabase |
+| `VITE_SUPABASE_ANON_KEY` | Clé publique (anon) Supabase |
+
+> Ces valeurs se trouvent dans **Supabase → Settings → API**.
