@@ -1,15 +1,22 @@
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   Package, ShoppingBag, TrendingUp, Clock, Phone, FileText,
-  CheckCircle, XCircle, AlertCircle, Eye,
+  CheckCircle, XCircle, AlertCircle, Eye, Settings, Upload,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '../components/ui/select';
 import { formatPrice, formatDate, ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '../lib/utils';
-import type { Order, Medicine, Profile } from '../types';
+import type { Order, Medicine, Profile, Pharmacy } from '../types';
+
+const CITIES = ['Dakar', 'Thiès', 'Saint-Louis', 'Ziguinchor', 'Kaolack', 'Diourbel'];
 
 async function fetchPharmacistData() {
   const { data: { user } } = await supabase.auth.getUser();
@@ -21,9 +28,9 @@ async function fetchPharmacistData() {
     .eq('id', user.id)
     .single();
 
-  if (!profile?.pharmacy_id) return { orders: [], medicines: [], profile };
+  if (!profile?.pharmacy_id) return { orders: [], medicines: [], profile, pharmacy: null };
 
-  const [{ data: orders }, { data: medicines }] = await Promise.all([
+  const [{ data: orders }, { data: medicines }, { data: pharmacy }] = await Promise.all([
     supabase
       .from('orders')
       .select('*, profile:profiles(full_name, phone)')
@@ -34,9 +41,14 @@ async function fetchPharmacistData() {
       .select('*')
       .eq('pharmacy_id', profile.pharmacy_id)
       .order('name'),
+    supabase
+      .from('pharmacies')
+      .select('*')
+      .eq('id', profile.pharmacy_id)
+      .single(),
   ]);
 
-  return { orders: orders ?? [], medicines: medicines ?? [], profile };
+  return { orders: orders ?? [], medicines: medicines ?? [], profile, pharmacy: pharmacy ?? null };
 }
 
 const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled'] as const;
@@ -50,6 +62,141 @@ function StatCard({ icon: Icon, label, value, color }: { icon: React.ElementType
       <p className="text-2xl font-bold text-gray-900">{value}</p>
       <p className="text-sm text-gray-500 mt-0.5">{label}</p>
     </div>
+  );
+}
+
+async function uploadPharmacyLogo(file: File): Promise<string> {
+  const ext = file.name.split('.').pop() ?? 'jpg';
+  const path = `${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from('pharmacy-images').upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data: { publicUrl } } = supabase.storage.from('pharmacy-images').getPublicUrl(path);
+  return publicUrl;
+}
+
+function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: pharmacy?.name ?? '',
+    address: pharmacy?.address ?? '',
+    city: pharmacy?.city ?? '',
+    phone: pharmacy?.phone ?? '',
+    email: pharmacy?.email ?? '',
+    opening_hours: pharmacy?.opening_hours ?? '',
+  });
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!pharmacy) return;
+    setSaving(true);
+    try {
+      let image_url = pharmacy.image_url;
+      if (imageFile) {
+        image_url = await uploadPharmacyLogo(imageFile);
+      }
+      const { error } = await supabase
+        .from('pharmacies')
+        .update({ ...form, email: form.email || null, opening_hours: form.opening_hours || null, image_url })
+        .eq('id', pharmacy.id);
+      if (error) throw error;
+      toast.success('Pharmacie mise à jour avec succès !');
+      queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erreur lors de la sauvegarde');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!pharmacy) return <p className="text-center text-gray-400 py-12">Pharmacie introuvable</p>;
+
+  const currentImage = imagePreview ?? pharmacy.image_url;
+
+  return (
+    <form onSubmit={handleSave} className="max-w-lg space-y-5">
+      {/* Logo */}
+      <div className="space-y-1.5">
+        <Label>Logo / Photo</Label>
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 rounded-xl border border-gray-200 overflow-hidden bg-gray-50 flex items-center justify-center flex-shrink-0">
+            {currentImage
+              ? <img src={currentImage} alt="Logo" className="w-full h-full object-cover" />
+              : <Upload className="h-6 w-6 text-gray-300" />
+            }
+          </div>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors"
+          >
+            <Upload className="h-4 w-4" />
+            {currentImage ? 'Changer le logo' : 'Ajouter un logo'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) { setImageFile(f); setImagePreview(URL.createObjectURL(f)); }
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="s-name">Nom de la pharmacie</Label>
+        <Input id="s-name" name="name" value={form.name} onChange={handleChange} required />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="s-address">Adresse</Label>
+          <Input id="s-address" name="address" value={form.address} onChange={handleChange} required />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Ville</Label>
+          <Select value={form.city} onValueChange={(v) => setForm((p) => ({ ...p, city: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CITIES.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="s-phone">Téléphone</Label>
+          <Input id="s-phone" name="phone" type="tel" value={form.phone} onChange={handleChange} required />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="s-email">Email</Label>
+          <Input id="s-email" name="email" type="email" value={form.email} onChange={handleChange} />
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="s-hours">Horaires d'ouverture</Label>
+        <Input id="s-hours" name="opening_hours" placeholder="Lun-Sam : 8h-20h" value={form.opening_hours} onChange={handleChange} />
+      </div>
+
+      <Button type="submit" disabled={saving} className="w-full sm:w-auto">
+        {saving
+          ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          : 'Sauvegarder les modifications'
+        }
+      </Button>
+    </form>
   );
 }
 
@@ -92,7 +239,7 @@ export default function PharmaDashboard() {
     );
   }
 
-  const { orders = [], medicines = [], profile } = data ?? {};
+  const { orders = [], medicines = [], profile, pharmacy = null } = data ?? {};
 
   if (!profile?.pharmacy_id) {
     return (
@@ -126,7 +273,7 @@ export default function PharmaDashboard() {
       </div>
 
       <Tabs defaultValue="overview">
-        <TabsList className="w-full mb-6 grid grid-cols-4">
+        <TabsList className="w-full mb-6 grid grid-cols-5">
           <TabsTrigger value="overview">Vue générale</TabsTrigger>
           <TabsTrigger value="orders">
             Commandes
@@ -144,6 +291,10 @@ export default function PharmaDashboard() {
                 {pendingPrescriptions.length}
               </span>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="settings" className="gap-1.5">
+            <Settings className="h-3.5 w-3.5" />
+            Paramètres
           </TabsTrigger>
         </TabsList>
 
@@ -337,6 +488,14 @@ export default function PharmaDashboard() {
                 </div>
               ))
             )}
+          </div>
+        </TabsContent>
+        {/* Settings */}
+        <TabsContent value="settings">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-1">Paramètres de la pharmacie</h2>
+            <p className="text-sm text-gray-500 mb-6">Modifiez les informations visibles par les clients.</p>
+            <SettingsTab pharmacy={pharmacy as Pharmacy | null} />
           </div>
         </TabsContent>
       </Tabs>

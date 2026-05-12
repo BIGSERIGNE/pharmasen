@@ -9,6 +9,7 @@ import Auth from './pages/Auth';
 import Home from './pages/Home';
 import AdminDashboard from './pages/AdminDashboard';
 import ProtectedAdminRoute from './components/ProtectedAdminRoute';
+import PharmaSetup from './pages/PharmaSetup';
 import PharmacyDetail from './pages/PharmacyDetail';
 import Cart from './pages/Cart';
 import Checkout from './pages/Checkout';
@@ -55,6 +56,9 @@ export default function App() {
               <Route path="/pharma/notifications" element={<Notifications />} />
               <Route path="/pharma/profile" element={<Profile />} />
             </Route>
+
+            {/* Pharmacist setup (standalone — hors Layout pour éviter boucle de redirection) */}
+            <Route path="/pharma/setup" element={<PharmaSetup />} />
 
             {/* Admin routes */}
             <Route element={<ProtectedAdminRoute />}>

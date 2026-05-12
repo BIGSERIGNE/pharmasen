@@ -48,6 +48,12 @@ export default function Layout({ requiredRole }: LayoutProps) {
 
         setProfile(data);
 
+        // Pharmacien sans pharmacie configurée → onboarding
+        if (data.role === 'pharmacist' && !data.pharmacy_id) {
+          navigate('/pharma/setup');
+          return;
+        }
+
         if (requiredRole && data.role !== requiredRole) {
           const dest =
             data.role === 'admin'      ? '/admin/dashboard' :

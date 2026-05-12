@@ -175,14 +175,9 @@ function EditUserModal({
 
 // ─── Onglet Créer un pharmacien ────────────────────────────────────────────────
 
-function CreatePharmacistTab({ pharmacies }: { pharmacies: PharmacyOption[] }) {
+function CreatePharmacistTab() {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({
-    full_name: '',
-    email: '',
-    password: '',
-    pharmacy_id: '',
-  });
+  const [form, setForm] = useState({ full_name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -206,13 +201,13 @@ function CreatePharmacistTab({ pharmacies }: { pharmacies: PharmacyOption[] }) {
         id: authData.user.id,
         full_name: form.full_name,
         role: 'pharmacist',
-        pharmacy_id: form.pharmacy_id || null,
+        pharmacy_id: null,
       }, { onConflict: 'id' });
 
       if (profileError) throw profileError;
 
       toast.success('Pharmacien créé avec succès !');
-      setForm({ full_name: '', email: '', password: '', pharmacy_id: '' });
+      setForm({ full_name: '', email: '', password: '' });
       queryClient.invalidateQueries({ queryKey: ['admin-data'] });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erreur lors de la création');
@@ -262,30 +257,11 @@ function CreatePharmacistTab({ pharmacies }: { pharmacies: PharmacyOption[] }) {
         />
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Pharmacie</Label>
-        <Select
-          value={form.pharmacy_id}
-          onValueChange={(v) => setForm((prev) => ({ ...prev, pharmacy_id: v }))}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Sélectionner une pharmacie" />
-          </SelectTrigger>
-          <SelectContent>
-            {pharmacies.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <p className="text-xs text-gray-400">
+        Le pharmacien configurera sa pharmacie lors de sa première connexion.
+      </p>
 
-      <Button
-        type="submit"
-        disabled={loading}
-        className="w-full bg-green-600 hover:bg-green-700"
-      >
+      <Button type="submit" disabled={loading} className="w-full bg-green-600 hover:bg-green-700">
         {loading ? (
           <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
         ) : (
@@ -507,7 +483,7 @@ export default function AdminDashboard() {
               <p className="text-sm text-gray-500 mb-6">
                 Le compte sera immédiatement actif avec le rôle pharmacien.
               </p>
-              <CreatePharmacistTab pharmacies={pharmacies} />
+              <CreatePharmacistTab />
             </div>
           </TabsContent>
         </Tabs>
