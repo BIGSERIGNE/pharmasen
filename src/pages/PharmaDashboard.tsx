@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import {
   Package, ShoppingBag, TrendingUp, Clock, Phone, FileText,
   CheckCircle, XCircle, AlertCircle, Eye, Settings, Upload,
+  Plus, Pencil, Trash2,
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
@@ -13,6 +14,9 @@ import { Label } from '../components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from '../components/ui/dialog';
 import { formatPrice, formatDate, ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '../lib/utils';
 import type { Order, Medicine, Profile, Pharmacy } from '../types';
 
@@ -65,6 +69,17 @@ function StatCard({ icon: Icon, label, value, color }: { icon: React.ElementType
   );
 }
 
+// ─── Upload helpers ────────────────────────────────────────────────────────────
+
+async function uploadMedicineImage(file: File): Promise<string> {
+  const ext = file.name.split('.').pop() ?? 'jpg';
+  const path = `${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from('medicine-images').upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data: { publicUrl } } = supabase.storage.from('medicine-images').getPublicUrl(path);
+  return publicUrl;
+}
+
 async function uploadPharmacyLogo(file: File): Promise<string> {
   const ext = file.name.split('.').pop() ?? 'jpg';
   const path = `${Date.now()}.${ext}`;
@@ -73,6 +88,194 @@ async function uploadPharmacyLogo(file: File): Promise<string> {
   const { data: { publicUrl } } = supabase.storage.from('pharmacy-images').getPublicUrl(path);
   return publicUrl;
 }
+
+// ─── Modal Médicament ──────────────────────────────────────────────────────────
+
+type MedicineForm = {
+  name: string;
+  description: string;
+  category: string;
+  price: string;
+  stock: string;
+  requires_prescription: boolean;
+};
+
+const EMPTY_MED_FORM: MedicineForm = {
+  name: '', description: '', category: '', price: '', stock: '0', requires_prescription: false,
+};
+
+function toForm(med: Medicine): MedicineForm {
+  return {
+    name: med.name,
+    description: med.description ?? '',
+    category: med.category ?? '',
+    price: String(med.price),
+    stock: String(med.stock),
+    requires_prescription: med.requires_prescription,
+  };
+}
+
+function MedicineModal({
+  pharmacyId,
+  medicine,
+  onClose,
+}: {
+  pharmacyId: string;
+  medicine: Medicine | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const isEdit = !!medicine;
+  const [form, setForm] = useState<MedicineForm>(medicine ? toForm(medicine) : EMPTY_MED_FORM);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      let image_url = medicine?.image_url ?? null;
+      if (imageFile) image_url = await uploadMedicineImage(imageFile);
+
+      const payload = {
+        name: form.name,
+        description: form.description || null,
+        category: form.category || null,
+        price: parseFloat(form.price) || 0,
+        stock: parseInt(form.stock, 10) || 0,
+        requires_prescription: form.requires_prescription,
+        image_url,
+        is_active: true,
+      };
+
+      if (isEdit) {
+        const { error } = await supabase.from('medicines').update(payload).eq('id', medicine.id);
+        if (error) throw error;
+        toast.success('Médicament modifié avec succès !');
+      } else {
+        const { error } = await supabase.from('medicines').insert({ ...payload, pharmacy_id: pharmacyId });
+        if (error) throw error;
+        toast.success('Médicament ajouté avec succès !');
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erreur');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const currentImage = imagePreview ?? medicine?.image_url;
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? 'Modifier le médicament' : 'Ajouter un médicament'}</DialogTitle>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Image */}
+          <div className="space-y-1.5">
+            <Label>Image</Label>
+            <div className="flex items-center gap-3">
+              <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-50 overflow-hidden flex items-center justify-center flex-shrink-0">
+                {currentImage
+                  ? <img src={currentImage} alt="" className="w-full h-full object-cover" />
+                  : <Package className="h-5 w-5 text-gray-300" />
+                }
+              </div>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                {currentImage ? 'Changer' : 'Ajouter une image'}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) { setImageFile(f); setImagePreview(URL.createObjectURL(f)); }
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Nom */}
+          <div className="space-y-1.5">
+            <Label htmlFor="m-name">Nom du médicament *</Label>
+            <Input id="m-name" name="name" value={form.name} onChange={handleChange} required placeholder="Paracétamol 500mg" />
+          </div>
+
+          {/* Description */}
+          <div className="space-y-1.5">
+            <Label htmlFor="m-desc">Description</Label>
+            <Input id="m-desc" name="description" value={form.description} onChange={handleChange} placeholder="Antalgique, antipyrétique..." />
+          </div>
+
+          {/* Catégorie */}
+          <div className="space-y-1.5">
+            <Label htmlFor="m-cat">Catégorie</Label>
+            <Input id="m-cat" name="category" value={form.category} onChange={handleChange} placeholder="Antalgiques, Antibiotiques..." />
+          </div>
+
+          {/* Prix + Stock */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="m-price">Prix (FCFA) *</Label>
+              <Input id="m-price" name="price" type="number" min="0" step="1" value={form.price} onChange={handleChange} required placeholder="1500" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="m-stock">Stock *</Label>
+              <Input id="m-stock" name="stock" type="number" min="0" step="1" value={form.stock} onChange={handleChange} required placeholder="50" />
+            </div>
+          </div>
+
+          {/* Ordonnance */}
+          <label className="flex items-start gap-3 p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={form.requires_prescription}
+              onChange={(e) => setForm((prev) => ({ ...prev, requires_prescription: e.target.checked }))}
+              className="mt-0.5 w-4 h-4 rounded border-gray-300 accent-primary-600"
+            />
+            <div>
+              <p className="text-sm font-medium text-gray-900">Nécessite une ordonnance</p>
+              <p className="text-xs text-gray-400">Le client devra fournir une prescription médicale</p>
+            </div>
+          </label>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+              Annuler
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {saving
+                ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                : isEdit ? 'Modifier' : 'Enregistrer'
+              }
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Onglet Paramètres ─────────────────────────────────────────────────────────
 
 function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
   const queryClient = useQueryClient();
@@ -202,9 +405,28 @@ function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
 
 export default function PharmaDashboard() {
   const queryClient = useQueryClient();
+  const [medicineModalOpen, setMedicineModalOpen] = useState(false);
+  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
+
+  const openAdd = () => { setEditingMedicine(null); setMedicineModalOpen(true); };
+  const openEdit = (med: Medicine) => { setEditingMedicine(med); setMedicineModalOpen(true); };
+  const closeModal = () => { setMedicineModalOpen(false); setEditingMedicine(null); };
+
   const { data, isLoading } = useQuery({
     queryKey: ['pharma-dashboard'],
     queryFn: fetchPharmacistData,
+  });
+
+  const deleteMedicine = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('medicines').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
+      toast.success('Médicament supprimé');
+    },
+    onError: () => toast.error('Erreur lors de la suppression'),
   });
 
   const updateOrderStatus = useMutation({
@@ -393,34 +615,99 @@ export default function PharmaDashboard() {
 
         {/* Stock */}
         <TabsContent value="stock">
-          <div className="space-y-3">
-            {lowStockMeds.length > 0 && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
-                <p className="text-red-700 font-semibold text-sm flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4" />
-                  {lowStockMeds.length} médicament{lowStockMeds.length > 1 ? 's' : ''} en stock faible
-                </p>
-              </div>
-            )}
-            {medicines.map((med: Medicine) => (
-              <div key={med.id} className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3 shadow-sm">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-gray-900 text-sm">{med.name}</p>
-                  <p className="text-xs text-gray-500">{med.category ?? 'Non catégorisé'} · {formatPrice(med.price)}</p>
-                </div>
-                <div className={`text-sm font-semibold px-3 py-1 rounded-full ${
-                  med.stock === 0 ? 'bg-red-100 text-red-700' :
-                  med.stock < 10 ? 'bg-amber-100 text-amber-700' :
-                  'bg-green-100 text-green-700'
-                }`}>
-                  {med.stock} unité{med.stock > 1 ? 's' : ''}
-                </div>
-              </div>
-            ))}
-            {medicines.length === 0 && (
-              <p className="text-center text-gray-400 py-12">Aucun médicament dans le stock</p>
-            )}
+          {/* En-tête + bouton ajout */}
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm text-gray-500 font-medium">
+              {medicines.length} produit{medicines.length !== 1 ? 's' : ''}
+            </p>
+            <Button size="sm" onClick={openAdd} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              Ajouter un médicament
+            </Button>
           </div>
+
+          {/* Alerte stock faible */}
+          {lowStockMeds.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+              <p className="text-red-700 font-semibold text-sm flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                {lowStockMeds.length} médicament{lowStockMeds.length > 1 ? 's' : ''} en stock faible
+              </p>
+            </div>
+          )}
+
+          {/* Liste vide */}
+          {medicines.length === 0 ? (
+            <div className="bg-white rounded-xl border border-gray-100 p-12 text-center shadow-sm">
+              <Package className="h-10 w-10 text-gray-300 mx-auto mb-3" />
+              <p className="text-gray-500 font-medium">Aucun médicament dans le stock</p>
+              <p className="text-gray-400 text-sm mt-1">Commencez par ajouter vos premiers médicaments</p>
+              <Button className="mt-4 gap-1.5" onClick={openAdd}>
+                <Plus className="h-4 w-4" />
+                Ajouter un médicament
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {medicines.map((med: Medicine) => (
+                <div key={med.id} className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-4 shadow-sm">
+                  {/* Image */}
+                  <div className="w-12 h-12 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                    {med.image_url
+                      ? <img src={med.image_url} alt={med.name} className="w-full h-full object-cover" />
+                      : <Package className="h-5 w-5 text-gray-300" />
+                    }
+                  </div>
+
+                  {/* Infos */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-medium text-gray-900 text-sm">{med.name}</p>
+                      {med.requires_prescription && (
+                        <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">
+                          Ordonnance requise
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {med.category ?? 'Non catégorisé'} · {formatPrice(med.price)}
+                    </p>
+                  </div>
+
+                  {/* Badge stock */}
+                  <div className={`text-sm font-semibold px-3 py-1 rounded-full flex-shrink-0 ${
+                    med.stock === 0 ? 'bg-red-100 text-red-700' :
+                    med.stock < 10 ? 'bg-amber-100 text-amber-700' :
+                    'bg-green-100 text-green-700'
+                  }`}>
+                    {med.stock} unité{med.stock !== 1 ? 's' : ''}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      onClick={() => openEdit(med)}
+                      className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                      title="Modifier"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`Supprimer "${med.name}" ?`)) {
+                          deleteMedicine.mutate(med.id);
+                        }
+                      }}
+                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         {/* Prescriptions */}
@@ -499,6 +786,15 @@ export default function PharmaDashboard() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Modal ajout/modification médicament */}
+      {medicineModalOpen && profile?.pharmacy_id && (
+        <MedicineModal
+          pharmacyId={profile.pharmacy_id}
+          medicine={editingMedicine}
+          onClose={closeModal}
+        />
+      )}
     </div>
   );
 }
