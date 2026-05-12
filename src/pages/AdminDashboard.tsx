@@ -201,16 +201,17 @@ function CreatePharmacistTab({ pharmacies }: { pharmacies: PharmacyOption[] }) {
       if (authError) throw authError;
       if (!authData.user) throw new Error('Échec de la création du compte');
 
-      const { error: profileError } = await supabase.from('profiles').insert({
+      // upsert pour écraser tout profil 'client' auto-créé par un trigger Supabase
+      const { error: profileError } = await supabase.from('profiles').upsert({
         id: authData.user.id,
         full_name: form.full_name,
         role: 'pharmacist',
         pharmacy_id: form.pharmacy_id || null,
-      });
+      }, { onConflict: 'id' });
 
       if (profileError) throw profileError;
 
-      toast.success(`Compte pharmacien créé pour ${form.email} !`);
+      toast.success('Pharmacien créé avec succès !');
       setForm({ full_name: '', email: '', password: '', pharmacy_id: '' });
       queryClient.invalidateQueries({ queryKey: ['admin-data'] });
     } catch (err) {

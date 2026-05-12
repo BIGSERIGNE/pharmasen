@@ -37,17 +37,15 @@ export default function Auth() {
 
     try {
       if (mode === 'login') {
-        console.log('[Auth] Tentative de connexion pour :', form.email);
         const { data, error } = await supabase.auth.signInWithPassword({
           email: form.email,
           password: form.password,
         });
-        console.log('[Auth] signInWithPassword → data:', data, '| error:', error);
         if (error) throw error;
 
         toast.success('Connexion réussie !');
 
-        // Race : récupération du profil vs timeout 2s → on ne bloque jamais
+        // Race : récupération du profil vs timeout 2s
         const profileFetch = supabase
           .from('profiles')
           .select('role')
@@ -59,28 +57,14 @@ export default function Auth() {
         );
 
         const result = await Promise.race([profileFetch, timeout]);
-        console.log('[Auth] Résultat profiles query:', result);
         const role = (result as Awaited<typeof profileFetch> | null)?.data?.role;
-        console.log('[Auth] Rôle détecté:', role ?? '(aucun — timeout ou profil absent)');
 
-        // Si pas de profil en base, on en crée un maintenant (session active)
-        if (!role) {
-          console.log('[Auth] Profil absent → création avec role=client');
-          const { data: upserted, error: upsertError } = await supabase
-            .from('profiles')
-            .upsert(
-              { id: data.user.id, full_name: data.user.email ?? '', role: 'client' },
-              { onConflict: 'id' }
-            )
-            .select();
-          console.log('[Auth] Upsert profil → data:', upserted, '| error:', upsertError);
-        }
-
+        // Ne jamais créer/écraser le profil ici — Layout.tsx s'en charge
+        // en utilisant INSERT uniquement (jamais d'upsert qui écraserait le rôle)
         const destination =
           role === 'pharmacist' ? '/pharma/dashboard' :
           role === 'admin'      ? '/admin/dashboard' :
                                   '/home';
-        console.log('[Auth] navigate vers :', destination);
         navigate(destination);
       } else {
         const { data, error } = await supabase.auth.signUp({

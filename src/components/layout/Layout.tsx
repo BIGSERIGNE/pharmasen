@@ -17,43 +17,28 @@ export default function Layout({ requiredRole }: LayoutProps) {
   useEffect(() => {
     const fetchProfile = async () => {
       try {
-        console.log('[Layout] fetchProfile démarré — requiredRole:', requiredRole);
-
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        console.log('[Layout] getSession → session:', session, '| error:', sessionError);
-
+        const { data: { session } } = await supabase.auth.getSession();
         if (!session?.user) {
-          console.log('[Layout] ⛔ Pas de session → navigate(/auth)');
           navigate('/auth');
           return;
         }
         const user = session.user;
-        console.log('[Layout] Utilisateur connecté :', user.id, user.email);
 
-        let { data, error: profileError } = await supabase
+        let { data } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', user.id)
           .single();
 
-        console.log('[Layout] Profil DB → data:', data, '| error:', profileError);
-
-        // Profil absent → tentative de création (Auth.tsx a pu rater si email non confirmé)
+        // Profil absent : INSERT uniquement (jamais upsert pour ne pas écraser le rôle)
         if (!data) {
-          console.log('[Layout] Profil introuvable → tentative upsert');
           const { data: created, error: createError } = await supabase
             .from('profiles')
-            .upsert(
-              { id: user.id, full_name: user.email ?? '', role: 'client' },
-              { onConflict: 'id' }
-            )
+            .insert({ id: user.id, full_name: user.email ?? '', role: 'client' })
             .select()
             .single();
 
-          console.log('[Layout] Upsert profil → data:', created, '| error:', createError);
-
-          if (!created) {
-            console.log('[Layout] ⛔ Impossible de créer le profil → signOut + navigate(/auth)');
+          if (createError || !created) {
             await supabase.auth.signOut();
             navigate('/auth');
             return;
@@ -61,23 +46,19 @@ export default function Layout({ requiredRole }: LayoutProps) {
           data = created;
         }
 
-        console.log('[Layout] ✅ Profil chargé :', data);
         setProfile(data);
 
         if (requiredRole && data.role !== requiredRole) {
           const dest =
-            data.role === 'admin'       ? '/admin/dashboard' :
-            data.role === 'pharmacist'  ? '/pharma/dashboard' :
-                                          '/home';
-          console.log(`[Layout] Rôle mismatch (attendu: ${requiredRole}, réel: ${data.role}) → navigate(${dest})`);
+            data.role === 'admin'      ? '/admin/dashboard' :
+            data.role === 'pharmacist' ? '/pharma/dashboard' :
+                                         '/home';
           navigate(dest);
           return;
         }
 
-        console.log('[Layout] ✅ setLoading(false) — rendu de la page');
         setLoading(false);
-      } catch (err) {
-        console.error('[Layout] ❌ Exception inattendue:', err);
+      } catch {
         await supabase.auth.signOut();
         navigate('/auth');
       }
