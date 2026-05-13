@@ -64,7 +64,7 @@ export default function Checkout() {
         price: i.medicine.price,
       }));
 
-      const { error } = await supabase.from('orders').insert({
+      const orderPayload = {
         client_id: user.id,
         pharmacy_id: cart.pharmacy_id,
         items,
@@ -74,10 +74,17 @@ export default function Checkout() {
         status: 'pending',
         prescription_url: prescriptionUrl,
         prescription_note: prescriptionNote || null,
-        prescription_status: requiresPrescription ? 'pending' : 'none',
-      });
+        prescription_status: requiresPrescription ? 'pending' : 'not_required',
+      };
 
-      if (error) throw error;
+      console.log('[Checkout] Payload avant insertion :', orderPayload);
+
+      const { error } = await supabase.from('orders').insert(orderPayload);
+
+      if (error) {
+        console.error('[Checkout] Erreur Supabase complète :', error);
+        throw error;
+      }
 
       clearCart();
       toast.success('Commande passée avec succès !');

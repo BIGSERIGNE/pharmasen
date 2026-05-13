@@ -19,11 +19,13 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import { formatPrice, formatDate, ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '../lib/utils';
-import type { Order, Medicine, Profile, Pharmacy } from '../types';
+import type { Order, Medicine, Pharmacy } from '../types';
 
 const CITIES = ['Dakar', 'Thiès', 'Saint-Louis', 'Ziguinchor', 'Kaolack', 'Diourbel'];
 
 // ─── Data fetch ───────────────────────────────────────────────────────────────
+
+type ClientInfo = { full_name: string | null; phone: string | null };
 
 async function fetchPharmacistData() {
   const { data: { session } } = await supabase.auth.getSession();
@@ -31,16 +33,18 @@ async function fetchPharmacistData() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('*')
+    .select('pharmacy_id')
     .eq('id', session.user.id)
     .single();
 
-  if (!profile?.pharmacy_id) return { orders: [], medicines: [], profile, pharmacy: null };
+  if (!profile?.pharmacy_id) {
+    return { orders: [] as Order[], medicines: [] as Medicine[], pharmacy: null, clients: {} as Record<string, ClientInfo> };
+  }
 
   const [{ data: orders }, { data: medicines }, { data: pharmacy }] = await Promise.all([
     supabase
       .from('orders')
-      .select('*, profile:profiles(full_name, phone)')
+      .select('*')
       .eq('pharmacy_id', profile.pharmacy_id)
       .order('created_at', { ascending: false }),
     supabase
@@ -55,7 +59,29 @@ async function fetchPharmacistData() {
       .single(),
   ]);
 
-  return { orders: orders ?? [], medicines: medicines ?? [], profile, pharmacy: pharmacy ?? null };
+  // Fetch client names separately using client_id from each order
+  const clientIds = [...new Set((orders ?? []).map((o: { client_id: string }) => o.client_id).filter(Boolean))];
+  let clients: Record<string, ClientInfo> = {};
+  if (clientIds.length > 0) {
+    const { data: clientProfiles } = await supabase
+      .from('profiles')
+      .select('id, full_name, phone')
+      .in('id', clientIds);
+    if (clientProfiles) {
+      clients = Object.fromEntries(
+        clientProfiles.map((p: { id: string; full_name: string | null; phone: string | null }) => [
+          p.id, { full_name: p.full_name, phone: p.phone },
+        ])
+      );
+    }
+  }
+
+  return {
+    orders: (orders ?? []) as Order[],
+    medicines: (medicines ?? []) as Medicine[],
+    pharmacy: pharmacy ?? null,
+    clients,
+  };
 }
 
 // ─── Period helpers ───────────────────────────────────────────────────────────
@@ -302,8 +328,6 @@ function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled'] as const;
-
 export default function PharmaDashboard() {
   const queryClient = useQueryClient();
   const [period, setPeriod] = useState<Period>('month');
@@ -316,12 +340,42 @@ export default function PharmaDashboard() {
   });
 
   const updateOrderStatus = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+    mutationFn: async ({ id, status, items }: { id: string; status: string; items?: Order['items'] }) => {
+      // Deduce stock before confirming
+      if (status === 'confirmed' && items && items.length > 0) {
+        for (const item of items) {
+          try {
+            const { data: med } = await supabase
+              .from('medicines')
+              .select('stock')
+              .eq('id', item.medicine_id)
+              .single();
+
+            if (med) {
+              const newStock = Math.max(0, (med as { stock: number }).stock - item.quantity);
+              const { error: stockError } = await supabase
+                .from('medicines')
+                .update({ stock: newStock })
+                .eq('id', item.medicine_id);
+
+              if (stockError) {
+                console.warn(`[Stock] Erreur mise à jour pour ${item.medicine_name}:`, stockError);
+                toast.warning(`Stock de "${item.medicine_name}" non mis à jour`);
+              }
+            }
+          } catch (err) {
+            console.warn(`[Stock] Exception pour ${item.medicine_name}:`, err);
+            toast.warning(`Stock de "${item.medicine_name}" non mis à jour`);
+          }
+        }
+      }
+
       const { error } = await supabase.from('orders').update({ status }).eq('id', id);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['pharma-stock'] });
       toast.success('Statut mis à jour');
     },
     onError: () => toast.error('Erreur lors de la mise à jour'),
@@ -354,9 +408,10 @@ export default function PharmaDashboard() {
     );
   }
 
-  const { orders = [], medicines = [], profile, pharmacy = null } = data ?? {};
+  const { orders = [], medicines = [], pharmacy = null, clients = {} } = data ?? {};
 
-  if (!profile?.pharmacy_id) {
+  // fetchPharmacistData returns null orders/pharmacy when pharmacy_id missing
+  if (!pharmacy) {
     return (
       <div className="max-w-lg mx-auto px-4 py-16 text-center">
         <AlertCircle className="h-12 w-12 text-amber-500 mx-auto mb-4" />
@@ -565,7 +620,7 @@ export default function PharmaDashboard() {
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-gray-900">#{order.id.slice(-6).toUpperCase()}</p>
                       <p className="text-xs text-gray-400 truncate">
-                        {(order.profile as unknown as Profile)?.full_name ?? 'Client'}
+                        {clients[order.client_id]?.full_name ?? 'Client'}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
@@ -613,62 +668,97 @@ export default function PharmaDashboard() {
         {/* ── Commandes ── */}
         <TabsContent value="orders">
           <div className="space-y-4">
-            {(orders as Order[]).length === 0 ? (
+            {orders.length === 0 ? (
               <p className="text-center text-gray-400 py-12">Aucune commande</p>
             ) : (
-              (orders as Order[]).map((order: Order) => (
-                <div key={order.id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
-                    <div>
-                      <p className="font-semibold text-gray-900">#{order.id.slice(-8).toUpperCase()}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">{formatDate(order.created_at)}</p>
+              orders.map((order: Order) => {
+                const client = clients[order.client_id];
+                const orderDate = new Date(order.created_at);
+                const dateStr = orderDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+                const timeStr = orderDate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                return (
+                  <div key={order.id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                    {/* Header */}
+                    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                      <div>
+                        <p className="font-semibold text-gray-900">#{order.id.slice(-8).toUpperCase()}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{dateStr} · {timeStr}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${ORDER_STATUS_COLORS[order.status]}`}>
+                          {ORDER_STATUS_LABELS[order.status]}
+                        </span>
+                        <span className="font-semibold text-primary-600">{formatPrice(order.total)}</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${ORDER_STATUS_COLORS[order.status]}`}>
-                        {ORDER_STATUS_LABELS[order.status]}
-                      </span>
-                      <span className="font-semibold text-primary-600">{formatPrice(order.total)}</span>
-                    </div>
-                  </div>
 
-                  {order.profile && (
+                    {/* Client info */}
                     <div className="flex items-center gap-3 text-sm text-gray-600 mb-3 bg-gray-50 rounded-lg p-2">
-                      <span>{(order.profile as unknown as Profile).full_name ?? 'Client'}</span>
-                      {(order.profile as unknown as Profile).phone && (
-                        <a href={`tel:${(order.profile as unknown as Profile).phone}`} className="flex items-center gap-1 text-primary-600">
+                      <span className="font-medium">{client?.full_name ?? 'Client inconnu'}</span>
+                      {client?.phone && (
+                        <a href={`tel:${client.phone}`} className="flex items-center gap-1 text-primary-600 hover:underline">
                           <Phone className="h-3.5 w-3.5" />
-                          {(order.profile as unknown as Profile).phone}
+                          {client.phone}
                         </a>
                       )}
                     </div>
-                  )}
 
-                  <div className="mb-3 space-y-1">
-                    {order.items.map((item) => (
-                      <div key={item.medicine_id} className="flex justify-between text-sm text-gray-600">
-                        <span>{item.medicine_name} × {item.quantity}</span>
-                        <span>{formatPrice(item.price * item.quantity)}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {order.status !== 'delivered' && order.status !== 'cancelled' && (
-                    <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
-                      {ORDER_STATUSES.filter((s) => s !== order.status).map((status) => (
-                        <Button
-                          key={status}
-                          size="sm"
-                          variant={status === 'cancelled' ? 'destructive' : status === 'delivered' ? 'default' : 'outline'}
-                          onClick={() => updateOrderStatus.mutate({ id: order.id, status })}
-                          disabled={updateOrderStatus.isPending}
-                        >
-                          {ORDER_STATUS_LABELS[status]}
-                        </Button>
+                    {/* Items */}
+                    <div className="mb-3 space-y-1">
+                      {order.items.map((item) => (
+                        <div key={item.medicine_id} className="flex justify-between text-sm text-gray-600">
+                          <span>{item.medicine_name} × {item.quantity}</span>
+                          <span>{formatPrice(item.price * item.quantity)}</span>
+                        </div>
                       ))}
                     </div>
-                  )}
-                </div>
-              ))
+
+                    {/* Status action buttons */}
+                    {order.status !== 'delivered' && order.status !== 'cancelled' && (
+                      <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+                        {order.status === 'pending' && (
+                          <Button
+                            size="sm"
+                            className="bg-blue-600 hover:bg-blue-700"
+                            onClick={() => updateOrderStatus.mutate({ id: order.id, status: 'confirmed', items: order.items })}
+                            disabled={updateOrderStatus.isPending}
+                          >
+                            Accepter
+                          </Button>
+                        )}
+                        {order.status === 'confirmed' && (
+                          <Button
+                            size="sm"
+                            className="bg-emerald-500 hover:bg-emerald-600"
+                            onClick={() => updateOrderStatus.mutate({ id: order.id, status: 'ready' })}
+                            disabled={updateOrderStatus.isPending}
+                          >
+                            Prêt
+                          </Button>
+                        )}
+                        {order.status === 'ready' && (
+                          <Button
+                            size="sm"
+                            className="bg-green-600 hover:bg-green-700"
+                            onClick={() => updateOrderStatus.mutate({ id: order.id, status: 'delivered' })}
+                            disabled={updateOrderStatus.isPending}
+                          >
+                            Livré
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => updateOrderStatus.mutate({ id: order.id, status: 'cancelled' })}
+                          disabled={updateOrderStatus.isPending}
+                        >
+                          Annuler
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </TabsContent>
@@ -679,16 +769,21 @@ export default function PharmaDashboard() {
             {pendingPrescriptions.length === 0 ? (
               <p className="text-center text-gray-400 py-12">Aucune ordonnance en attente</p>
             ) : (
-              pendingPrescriptions.map((order: Order) => (
+              pendingPrescriptions.map((order: Order) => {
+                const client = clients[order.client_id];
+                return (
                 <div key={order.id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
                   <div className="flex items-start justify-between gap-3 mb-4">
                     <div>
                       <p className="font-semibold text-gray-900">#{order.id.slice(-8).toUpperCase()}</p>
                       <p className="text-xs text-gray-500">{formatDate(order.created_at)}</p>
+                      {client?.full_name && (
+                        <p className="text-sm text-gray-600 mt-0.5">{client.full_name}</p>
+                      )}
                     </div>
-                    {order.profile && (
+                    {client?.phone && (
                       <a
-                        href={`tel:${(order.profile as unknown as Profile).phone}`}
+                        href={`tel:${client.phone}`}
                         className="flex items-center gap-1.5 bg-primary-50 text-primary-700 text-sm px-3 py-1.5 rounded-lg hover:bg-primary-100 transition-colors"
                       >
                         <Phone className="h-3.5 w-3.5" />
@@ -750,7 +845,8 @@ export default function PharmaDashboard() {
                     </Button>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </TabsContent>
