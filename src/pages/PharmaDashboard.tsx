@@ -1,11 +1,15 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
-  Package, ShoppingBag, TrendingUp, Clock, Phone, FileText,
-  CheckCircle, XCircle, AlertCircle, Eye, Settings, Upload,
-  Plus, Pencil, Trash2,
+  ChevronLeft, ChevronRight, TrendingUp, Phone, FileText,
+  CheckCircle, XCircle, Eye, Settings, Upload, AlertCircle,
+  ArrowRight,
 } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from 'recharts';
 import { supabase } from '../lib/supabaseClient';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Button } from '../components/ui/button';
@@ -14,22 +18,21 @@ import { Label } from '../components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from '../components/ui/dialog';
 import { formatPrice, formatDate, ORDER_STATUS_LABELS, ORDER_STATUS_COLORS } from '../lib/utils';
 import type { Order, Medicine, Profile, Pharmacy } from '../types';
 
 const CITIES = ['Dakar', 'Thiès', 'Saint-Louis', 'Ziguinchor', 'Kaolack', 'Diourbel'];
 
+// ─── Data fetch ───────────────────────────────────────────────────────────────
+
 async function fetchPharmacistData() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Non authentifié');
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Non authentifié');
 
   const { data: profile } = await supabase
     .from('profiles')
     .select('*')
-    .eq('id', user.id)
+    .eq('id', session.user.id)
     .single();
 
   if (!profile?.pharmacy_id) return { orders: [], medicines: [], profile, pharmacy: null };
@@ -55,30 +58,113 @@ async function fetchPharmacistData() {
   return { orders: orders ?? [], medicines: medicines ?? [], profile, pharmacy: pharmacy ?? null };
 }
 
-const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled'] as const;
+// ─── Period helpers ───────────────────────────────────────────────────────────
 
-function StatCard({ icon: Icon, label, value, color }: { icon: React.ElementType; label: string; value: number | string; color: string }) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-      <div className={`w-10 h-10 rounded-lg ${color} flex items-center justify-center mb-3`}>
-        <Icon className="h-5 w-5 text-white" />
-      </div>
-      <p className="text-2xl font-bold text-gray-900">{value}</p>
-      <p className="text-sm text-gray-500 mt-0.5">{label}</p>
-    </div>
-  );
+type Period = 'day' | 'week' | 'month' | 'year';
+
+const PERIODS: { key: Period; label: string }[] = [
+  { key: 'day', label: "Aujourd'hui" },
+  { key: 'week', label: 'Cette semaine' },
+  { key: 'month', label: 'Ce mois' },
+  { key: 'year', label: 'Cette année' },
+];
+
+function getDateRange(period: Period, offset: number): { start: Date; end: Date; label: string } {
+  const now = new Date();
+  switch (period) {
+    case 'day': {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+      const start = new Date(d);
+      const end = new Date(start.getTime() + 86400000 - 1);
+      return {
+        start,
+        end,
+        label: offset === 0
+          ? "Aujourd'hui"
+          : d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }),
+      };
+    }
+    case 'week': {
+      const dow = now.getDay() === 0 ? 6 : now.getDay() - 1;
+      const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow + offset * 7);
+      const start = new Date(mon);
+      const end = new Date(start.getTime() + 7 * 86400000 - 1);
+      return {
+        start,
+        end,
+        label: offset === 0
+          ? 'Cette semaine'
+          : `${start.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} – ${end.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+      };
+    }
+    case 'month': {
+      const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1);
+      const end = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+      return {
+        start,
+        end,
+        label: offset === 0
+          ? 'Ce mois'
+          : d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+      };
+    }
+    case 'year': {
+      const year = now.getFullYear() + offset;
+      return {
+        start: new Date(year, 0, 1),
+        end: new Date(year, 11, 31, 23, 59, 59),
+        label: offset === 0 ? 'Cette année' : String(year),
+      };
+    }
+  }
 }
 
-// ─── Upload helpers ────────────────────────────────────────────────────────────
+function buildChartData(orders: Order[], period: Period, range: { start: Date; end: Date }) {
+  const delivered = orders.filter(o => {
+    const d = new Date(o.created_at);
+    return o.status === 'delivered' && d >= range.start && d <= range.end;
+  });
 
-async function uploadMedicineImage(file: File): Promise<string> {
-  const ext = file.name.split('.').pop() ?? 'jpg';
-  const path = `${Date.now()}.${ext}`;
-  const { error } = await supabase.storage.from('medicine-images').upload(path, file, { upsert: true });
-  if (error) throw error;
-  const { data: { publicUrl } } = supabase.storage.from('medicine-images').getPublicUrl(path);
-  return publicUrl;
+  if (period === 'day') {
+    return Array.from({ length: 8 }, (_, i) => {
+      const h = i * 3;
+      return {
+        name: `${h}h`,
+        ventes: delivered
+          .filter(o => { const hr = new Date(o.created_at).getHours(); return hr >= h && hr < h + 3; })
+          .reduce((s, o) => s + o.total, 0),
+      };
+    });
+  }
+
+  if (period === 'week') {
+    return ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((name, i) => {
+      const ds = new Date(range.start.getTime() + i * 86400000);
+      const de = new Date(ds.getTime() + 86400000 - 1);
+      return {
+        name,
+        ventes: delivered.filter(o => { const d = new Date(o.created_at); return d >= ds && d <= de; })
+          .reduce((s, o) => s + o.total, 0),
+      };
+    });
+  }
+
+  if (period === 'month') {
+    const days = new Date(range.start.getFullYear(), range.start.getMonth() + 1, 0).getDate();
+    return Array.from({ length: days }, (_, i) => ({
+      name: String(i + 1),
+      ventes: delivered.filter(o => new Date(o.created_at).getDate() === i + 1).reduce((s, o) => s + o.total, 0),
+    }));
+  }
+
+  return ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'].map((name, i) => ({
+    name,
+    ventes: delivered.filter(o => new Date(o.created_at).getMonth() === i).reduce((s, o) => s + o.total, 0),
+  }));
 }
+
+// ─── Upload helpers ───────────────────────────────────────────────────────────
 
 async function uploadPharmacyLogo(file: File): Promise<string> {
   const ext = file.name.split('.').pop() ?? 'jpg';
@@ -89,193 +175,7 @@ async function uploadPharmacyLogo(file: File): Promise<string> {
   return publicUrl;
 }
 
-// ─── Modal Médicament ──────────────────────────────────────────────────────────
-
-type MedicineForm = {
-  name: string;
-  description: string;
-  category: string;
-  price: string;
-  stock: string;
-  requires_prescription: boolean;
-};
-
-const EMPTY_MED_FORM: MedicineForm = {
-  name: '', description: '', category: '', price: '', stock: '0', requires_prescription: false,
-};
-
-function toForm(med: Medicine): MedicineForm {
-  return {
-    name: med.name,
-    description: med.description ?? '',
-    category: med.category ?? '',
-    price: String(med.price),
-    stock: String(med.stock),
-    requires_prescription: med.requires_prescription,
-  };
-}
-
-function MedicineModal({
-  pharmacyId,
-  medicine,
-  onClose,
-}: {
-  pharmacyId: string;
-  medicine: Medicine | null;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const isEdit = !!medicine;
-  const [form, setForm] = useState<MedicineForm>(medicine ? toForm(medicine) : EMPTY_MED_FORM);
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
-  };
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setSaving(true);
-    try {
-      let image_url = medicine?.image_url ?? null;
-      if (imageFile) image_url = await uploadMedicineImage(imageFile);
-
-      const payload = {
-        name: form.name,
-        description: form.description || null,
-        category: form.category || null,
-        price: parseFloat(form.price) || 0,
-        stock: parseInt(form.stock, 10) || 0,
-        requires_prescription: form.requires_prescription,
-        image_url,
-        is_active: true,
-      };
-
-      if (isEdit) {
-        const { error } = await supabase.from('medicines').update(payload).eq('id', medicine.id);
-        if (error) throw error;
-        toast.success('Médicament modifié avec succès !');
-      } else {
-        const { error } = await supabase.from('medicines').insert({ ...payload, pharmacy_id: pharmacyId });
-        if (error) throw error;
-        toast.success('Médicament ajouté avec succès !');
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
-      onClose();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Erreur');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const currentImage = imagePreview ?? medicine?.image_url;
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-md max-h-[92vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? 'Modifier le médicament' : 'Ajouter un médicament'}</DialogTitle>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Image */}
-          <div className="space-y-1.5">
-            <Label>Image</Label>
-            <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-50 overflow-hidden flex items-center justify-center flex-shrink-0">
-                {currentImage
-                  ? <img src={currentImage} alt="" className="w-full h-full object-cover" />
-                  : <Package className="h-5 w-5 text-gray-300" />
-                }
-              </div>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded-lg transition-colors"
-              >
-                <Upload className="h-3.5 w-3.5" />
-                {currentImage ? 'Changer' : 'Ajouter une image'}
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) { setImageFile(f); setImagePreview(URL.createObjectURL(f)); }
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Nom */}
-          <div className="space-y-1.5">
-            <Label htmlFor="m-name">Nom du médicament *</Label>
-            <Input id="m-name" name="name" value={form.name} onChange={handleChange} required placeholder="Paracétamol 500mg" />
-          </div>
-
-          {/* Description */}
-          <div className="space-y-1.5">
-            <Label htmlFor="m-desc">Description</Label>
-            <Input id="m-desc" name="description" value={form.description} onChange={handleChange} placeholder="Antalgique, antipyrétique..." />
-          </div>
-
-          {/* Catégorie */}
-          <div className="space-y-1.5">
-            <Label htmlFor="m-cat">Catégorie</Label>
-            <Input id="m-cat" name="category" value={form.category} onChange={handleChange} placeholder="Antalgiques, Antibiotiques..." />
-          </div>
-
-          {/* Prix + Stock */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="m-price">Prix (FCFA) *</Label>
-              <Input id="m-price" name="price" type="number" min="0" step="1" value={form.price} onChange={handleChange} required placeholder="1500" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="m-stock">Stock *</Label>
-              <Input id="m-stock" name="stock" type="number" min="0" step="1" value={form.stock} onChange={handleChange} required placeholder="50" />
-            </div>
-          </div>
-
-          {/* Ordonnance */}
-          <label className="flex items-start gap-3 p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors">
-            <input
-              type="checkbox"
-              checked={form.requires_prescription}
-              onChange={(e) => setForm((prev) => ({ ...prev, requires_prescription: e.target.checked }))}
-              className="mt-0.5 w-4 h-4 rounded border-gray-300 accent-primary-600"
-            />
-            <div>
-              <p className="text-sm font-medium text-gray-900">Nécessite une ordonnance</p>
-              <p className="text-xs text-gray-400">Le client devra fournir une prescription médicale</p>
-            </div>
-          </label>
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
-              Annuler
-            </Button>
-            <Button type="submit" disabled={saving}>
-              {saving
-                ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                : isEdit ? 'Modifier' : 'Enregistrer'
-              }
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ─── Onglet Paramètres ─────────────────────────────────────────────────────────
+// ─── Onglet Paramètres ────────────────────────────────────────────────────────
 
 function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
   const queryClient = useQueryClient();
@@ -302,9 +202,7 @@ function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
     setSaving(true);
     try {
       let image_url = pharmacy.image_url;
-      if (imageFile) {
-        image_url = await uploadPharmacyLogo(imageFile);
-      }
+      if (imageFile) image_url = await uploadPharmacyLogo(imageFile);
       const { error } = await supabase
         .from('pharmacies')
         .update({ ...form, email: form.email || null, opening_hours: form.opening_hours || null, image_url })
@@ -325,7 +223,6 @@ function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
 
   return (
     <form onSubmit={handleSave} className="max-w-lg space-y-5">
-      {/* Logo */}
       <div className="space-y-1.5">
         <Label>Logo / Photo</Label>
         <div className="flex items-center gap-4">
@@ -403,30 +300,19 @@ function SettingsTab({ pharmacy }: { pharmacy: Pharmacy | null }) {
   );
 }
 
+// ─── Main component ───────────────────────────────────────────────────────────
+
+const ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'delivered', 'cancelled'] as const;
+
 export default function PharmaDashboard() {
   const queryClient = useQueryClient();
-  const [medicineModalOpen, setMedicineModalOpen] = useState(false);
-  const [editingMedicine, setEditingMedicine] = useState<Medicine | null>(null);
-
-  const openAdd = () => { setEditingMedicine(null); setMedicineModalOpen(true); };
-  const openEdit = (med: Medicine) => { setEditingMedicine(med); setMedicineModalOpen(true); };
-  const closeModal = () => { setMedicineModalOpen(false); setEditingMedicine(null); };
+  const [period, setPeriod] = useState<Period>('month');
+  const [dateOffset, setDateOffset] = useState(0);
+  const [activeTab, setActiveTab] = useState('overview');
 
   const { data, isLoading } = useQuery({
     queryKey: ['pharma-dashboard'],
     queryFn: fetchPharmacistData,
-  });
-
-  const deleteMedicine = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from('medicines').delete().eq('id', id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pharma-dashboard'] });
-      toast.success('Médicament supprimé');
-    },
-    onError: () => toast.error('Erreur lors de la suppression'),
   });
 
   const updateOrderStatus = useMutation({
@@ -453,6 +339,13 @@ export default function PharmaDashboard() {
     onError: () => toast.error('Erreur lors de la mise à jour'),
   });
 
+  const dateRange = useMemo(() => getDateRange(period, dateOffset), [period, dateOffset]);
+
+  const handlePeriodChange = (p: Period) => {
+    setPeriod(p);
+    setDateOffset(0);
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -473,87 +366,257 @@ export default function PharmaDashboard() {
     );
   }
 
-  const pendingOrders = orders.filter((o: Order) => o.status === 'pending');
-  const todayOrders = orders.filter((o: Order) => {
-    const today = new Date().toDateString();
-    return new Date(o.created_at).toDateString() === today;
+  // Period-filtered data
+  const periodOrders = (orders as Order[]).filter(o => {
+    const d = new Date(o.created_at);
+    return d >= dateRange.start && d <= dateRange.end;
   });
-  const lowStockMeds = medicines.filter((m: Medicine) => m.stock < 10 && m.stock > 0);
-  const totalRevenue = orders
-    .filter((o: Order) => o.status === 'delivered')
-    .reduce((sum: number, o: Order) => sum + o.total, 0);
 
-  const pendingPrescriptions = orders.filter(
-    (o: Order) => o.prescription_status === 'pending' && o.prescription_url
+  const periodRevenue = periodOrders
+    .filter(o => o.status === 'delivered')
+    .reduce((sum, o) => sum + o.total, 0);
+  const periodDelivered = periodOrders.filter(o => o.status === 'delivered').length;
+  const periodPending = periodOrders.filter(o => o.status === 'pending').length;
+  const periodConfirmed = periodOrders.filter(o => o.status === 'confirmed').length;
+  const periodReady = periodOrders.filter(o => o.status === 'ready').length;
+
+  // Today revenue (always today regardless of selected period)
+  const todayStr = new Date().toDateString();
+  const todayRevenue = (orders as Order[])
+    .filter(o => new Date(o.created_at).toDateString() === todayStr && o.status === 'delivered')
+    .reduce((sum, o) => sum + o.total, 0);
+
+  // Active orders (not completed/cancelled)
+  const activeOrders = (orders as Order[]).filter(o => !['delivered', 'cancelled'].includes(o.status));
+
+  // Stock alerts
+  const ruptureMeds = (medicines as Medicine[]).filter(m => m.stock === 0);
+  const lowMeds = (medicines as Medicine[]).filter(m => m.stock > 0 && m.stock < 10);
+  const alertMeds = [...ruptureMeds, ...lowMeds];
+
+  // Prescriptions
+  const pendingPrescriptions = (orders as Order[]).filter(
+    o => o.prescription_status === 'pending' && o.prescription_url
   );
 
-  return (
-    <div className="max-w-5xl mx-auto px-4 py-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-gray-500 text-sm mt-1">Gérez votre pharmacie</p>
-      </div>
+  const chartData = buildChartData(orders as Order[], period, dateRange);
 
-      <Tabs defaultValue="overview">
-        <TabsList className="w-full mb-6 grid grid-cols-5">
-          <TabsTrigger value="overview">Vue générale</TabsTrigger>
-          <TabsTrigger value="orders">
+  return (
+    <div className="max-w-6xl mx-auto px-4 py-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="mb-6 flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+          <TabsTrigger value="overview" className="rounded-lg px-4">Vue générale</TabsTrigger>
+          <TabsTrigger value="orders" className="rounded-lg px-4">
             Commandes
-            {pendingOrders.length > 0 && (
+            {activeOrders.length > 0 && (
               <span className="ml-1.5 bg-primary-600 text-white text-xs rounded-full px-1.5 py-0.5">
-                {pendingOrders.length}
+                {activeOrders.length}
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="stock">Stock</TabsTrigger>
-          <TabsTrigger value="prescriptions">
-            Ordo.
+          <TabsTrigger value="prescriptions" className="rounded-lg px-4">
+            Ordonnances
             {pendingPrescriptions.length > 0 && (
               <span className="ml-1.5 bg-amber-500 text-white text-xs rounded-full px-1.5 py-0.5">
                 {pendingPrescriptions.length}
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="settings" className="gap-1.5">
+          <TabsTrigger value="settings" className="rounded-lg px-4 gap-1.5">
             <Settings className="h-3.5 w-3.5" />
             Paramètres
           </TabsTrigger>
         </TabsList>
 
-        {/* Overview */}
-        <TabsContent value="overview">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-            <StatCard icon={ShoppingBag} label="Commandes aujourd'hui" value={todayOrders.length} color="bg-blue-500" />
-            <StatCard icon={Clock} label="En attente" value={pendingOrders.length} color="bg-amber-500" />
-            <StatCard icon={Package} label="Stock faible" value={lowStockMeds.length} color="bg-red-500" />
-            <StatCard icon={TrendingUp} label="Chiffre d'affaires" value={formatPrice(totalRevenue)} color="bg-primary-600" />
+        {/* ── Vue générale ── */}
+        <TabsContent value="overview" className="space-y-6">
+          {/* Period selector + date navigation */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex bg-gray-100 rounded-xl p-1 gap-1">
+              {PERIODS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => handlePeriodChange(key)}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${
+                    period === key
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                onClick={() => setDateOffset(o => o - 1)}
+                className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-500"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="text-sm font-medium text-gray-700 min-w-[120px] text-center">
+                {dateRange.label}
+              </span>
+              <button
+                onClick={() => setDateOffset(o => Math.min(0, o + 1))}
+                disabled={dateOffset >= 0}
+                className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-500 disabled:opacity-30"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-            <h3 className="font-semibold text-gray-900 mb-4">Dernières commandes</h3>
-            {orders.slice(0, 5).map((order: Order) => (
-              <div key={order.id} className="flex items-center gap-3 py-3 border-b border-gray-50 last:border-0">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900">Commande #{order.id.slice(-8).toUpperCase()}</p>
-                  <p className="text-xs text-gray-500">{formatDate(order.created_at)}</p>
-                </div>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${ORDER_STATUS_COLORS[order.status]}`}>
-                  {ORDER_STATUS_LABELS[order.status]}
-                </span>
-                <span className="text-sm font-semibold text-gray-700">{formatPrice(order.total)}</span>
+          {/* Stat cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Green CA card */}
+            <div className="bg-green-600 rounded-2xl p-6 text-white">
+              <p className="text-sm text-green-100">Chiffre d'affaires</p>
+              <p className="text-3xl font-bold mt-2">{formatPrice(periodRevenue)}</p>
+              <div className="flex items-center gap-1.5 mt-3 text-sm text-green-100">
+                <TrendingUp className="h-4 w-4" />
+                {periodDelivered} commande{periodDelivered !== 1 ? 's' : ''} livrée{periodDelivered !== 1 ? 's' : ''}
               </div>
-            ))}
-            {orders.length === 0 && <p className="text-gray-400 text-sm text-center py-4">Aucune commande</p>}
+            </div>
+
+            {/* CA du jour */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <p className="text-sm text-gray-500">CA du jour</p>
+              <p className="text-2xl font-bold mt-2 text-gray-900">{formatPrice(todayRevenue)}</p>
+              <p className="text-xs text-gray-400 mt-2">
+                {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              </p>
+            </div>
+
+            {/* Commandes with sub-stats */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <p className="text-sm text-gray-500 mb-3">Commandes</p>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { dot: 'bg-orange-500', label: 'En attente', count: periodPending },
+                  { dot: 'bg-blue-500', label: 'Acceptées', count: periodConfirmed },
+                  { dot: 'bg-emerald-400', label: 'Prêtes', count: periodReady },
+                  { dot: 'bg-green-600', label: 'Livrées', count: periodDelivered },
+                ].map(({ dot, label, count }) => (
+                  <div key={label} className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                    <div>
+                      <p className="text-xs text-gray-400">{label}</p>
+                      <p className="text-lg font-bold text-gray-900 leading-tight">{count}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Bar chart */}
+          <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm">
+            <h3 className="font-semibold text-gray-900 mb-5">Évolution Des Ventes</h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 11, fill: '#9ca3af' }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval={period === 'month' ? 4 : 0}
+                />
+                <YAxis
+                  tick={{ fontSize: 11, fill: '#9ca3af' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v)}
+                  width={40}
+                />
+                <Tooltip
+                  formatter={(value: unknown) => [
+                    `${new Intl.NumberFormat('fr-FR').format(value as number)} FCFA`,
+                    'Ventes',
+                  ]}
+                  contentStyle={{ borderRadius: '10px', border: '1px solid #e5e7eb', padding: '8px 12px' }}
+                  labelStyle={{ fontWeight: 600, fontSize: 13 }}
+                  cursor={{ fill: '#f0fdf4' }}
+                />
+                <Bar dataKey="ventes" fill="#16a34a" radius={[4, 4, 0, 0]} maxBarSize={40} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* 2-column bottom */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Commandes en cours */}
+            <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900">Commandes en cours</h3>
+                <button
+                  onClick={() => setActiveTab('orders')}
+                  className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-medium"
+                >
+                  Gérer <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {activeOrders.length === 0 ? (
+                <p className="text-gray-400 text-sm text-center py-6">Aucune commande en cours</p>
+              ) : (
+                activeOrders.slice(0, 6).map((order: Order) => (
+                  <div key={order.id} className="flex items-center justify-between py-2.5 border-b border-gray-50 last:border-0 gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900">#{order.id.slice(-6).toUpperCase()}</p>
+                      <p className="text-xs text-gray-400 truncate">
+                        {(order.profile as unknown as Profile)?.full_name ?? 'Client'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${ORDER_STATUS_COLORS[order.status]}`}>
+                        {ORDER_STATUS_LABELS[order.status]}
+                      </span>
+                      <span className="text-sm font-semibold text-gray-700">{formatPrice(order.total)}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Alertes stock */}
+            <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-gray-900">Alertes stock</h3>
+                <Link
+                  to="/pharma/stock"
+                  className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-medium"
+                >
+                  Gérer <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+              {alertMeds.length === 0 ? (
+                <p className="text-gray-400 text-sm text-center py-6">Aucune alerte de stock</p>
+              ) : (
+                alertMeds.slice(0, 6).map((med: Medicine) => (
+                  <div key={med.id} className="flex items-center justify-between py-2.5 border-b border-gray-50 last:border-0 gap-2">
+                    <p className="text-sm font-medium text-gray-900 truncate">{med.name}</p>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                      med.stock === 0
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {med.stock === 0 ? 'Rupture' : `${med.stock} unités`}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </TabsContent>
 
-        {/* Orders */}
+        {/* ── Commandes ── */}
         <TabsContent value="orders">
           <div className="space-y-4">
-            {orders.length === 0 ? (
+            {(orders as Order[]).length === 0 ? (
               <p className="text-center text-gray-400 py-12">Aucune commande</p>
             ) : (
-              orders.map((order: Order) => (
+              (orders as Order[]).map((order: Order) => (
                 <div key={order.id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
                   <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
                     <div>
@@ -568,7 +631,6 @@ export default function PharmaDashboard() {
                     </div>
                   </div>
 
-                  {/* Client info */}
                   {order.profile && (
                     <div className="flex items-center gap-3 text-sm text-gray-600 mb-3 bg-gray-50 rounded-lg p-2">
                       <span>{(order.profile as unknown as Profile).full_name ?? 'Client'}</span>
@@ -581,7 +643,6 @@ export default function PharmaDashboard() {
                     </div>
                   )}
 
-                  {/* Items */}
                   <div className="mb-3 space-y-1">
                     {order.items.map((item) => (
                       <div key={item.medicine_id} className="flex justify-between text-sm text-gray-600">
@@ -591,7 +652,6 @@ export default function PharmaDashboard() {
                     ))}
                   </div>
 
-                  {/* Status update */}
                   {order.status !== 'delivered' && order.status !== 'cancelled' && (
                     <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
                       {ORDER_STATUSES.filter((s) => s !== order.status).map((status) => (
@@ -613,104 +673,7 @@ export default function PharmaDashboard() {
           </div>
         </TabsContent>
 
-        {/* Stock */}
-        <TabsContent value="stock">
-          {/* En-tête + bouton ajout */}
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-sm text-gray-500 font-medium">
-              {medicines.length} produit{medicines.length !== 1 ? 's' : ''}
-            </p>
-            <Button size="sm" onClick={openAdd} className="gap-1.5">
-              <Plus className="h-4 w-4" />
-              Ajouter un médicament
-            </Button>
-          </div>
-
-          {/* Alerte stock faible */}
-          {lowStockMeds.length > 0 && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
-              <p className="text-red-700 font-semibold text-sm flex items-center gap-2">
-                <AlertCircle className="h-4 w-4" />
-                {lowStockMeds.length} médicament{lowStockMeds.length > 1 ? 's' : ''} en stock faible
-              </p>
-            </div>
-          )}
-
-          {/* Liste vide */}
-          {medicines.length === 0 ? (
-            <div className="bg-white rounded-xl border border-gray-100 p-12 text-center shadow-sm">
-              <Package className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">Aucun médicament dans le stock</p>
-              <p className="text-gray-400 text-sm mt-1">Commencez par ajouter vos premiers médicaments</p>
-              <Button className="mt-4 gap-1.5" onClick={openAdd}>
-                <Plus className="h-4 w-4" />
-                Ajouter un médicament
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {medicines.map((med: Medicine) => (
-                <div key={med.id} className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-4 shadow-sm">
-                  {/* Image */}
-                  <div className="w-12 h-12 rounded-lg bg-gray-50 border border-gray-100 overflow-hidden flex-shrink-0 flex items-center justify-center">
-                    {med.image_url
-                      ? <img src={med.image_url} alt={med.name} className="w-full h-full object-cover" />
-                      : <Package className="h-5 w-5 text-gray-300" />
-                    }
-                  </div>
-
-                  {/* Infos */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="font-medium text-gray-900 text-sm">{med.name}</p>
-                      {med.requires_prescription && (
-                        <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">
-                          Ordonnance requise
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {med.category ?? 'Non catégorisé'} · {formatPrice(med.price)}
-                    </p>
-                  </div>
-
-                  {/* Badge stock */}
-                  <div className={`text-sm font-semibold px-3 py-1 rounded-full flex-shrink-0 ${
-                    med.stock === 0 ? 'bg-red-100 text-red-700' :
-                    med.stock < 10 ? 'bg-amber-100 text-amber-700' :
-                    'bg-green-100 text-green-700'
-                  }`}>
-                    {med.stock} unité{med.stock !== 1 ? 's' : ''}
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      onClick={() => openEdit(med)}
-                      className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
-                      title="Modifier"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`Supprimer "${med.name}" ?`)) {
-                          deleteMedicine.mutate(med.id);
-                        }
-                      }}
-                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      title="Supprimer"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </TabsContent>
-
-        {/* Prescriptions */}
+        {/* ── Ordonnances ── */}
         <TabsContent value="prescriptions">
           <div className="space-y-4">
             {pendingPrescriptions.length === 0 ? (
@@ -718,7 +681,7 @@ export default function PharmaDashboard() {
             ) : (
               pendingPrescriptions.map((order: Order) => (
                 <div key={order.id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-                  <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="flex items-start justify-between gap-3 mb-4">
                     <div>
                       <p className="font-semibold text-gray-900">#{order.id.slice(-8).toUpperCase()}</p>
                       <p className="text-xs text-gray-500">{formatDate(order.created_at)}</p>
@@ -734,28 +697,42 @@ export default function PharmaDashboard() {
                     )}
                   </div>
 
-                  {order.prescription_note && (
-                    <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 mb-3">
-                      <FileText className="h-4 w-4 inline mr-1 text-gray-400" />
-                      {order.prescription_note}
-                    </p>
-                  )}
-
+                  {/* Prescription image */}
                   {order.prescription_url && (
                     <a
                       href={order.prescription_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-2 text-sm text-primary-600 hover:underline mb-4"
+                      className="block mb-4"
                     >
-                      <Eye className="h-4 w-4" />
-                      Voir l'ordonnance
+                      <div className="relative w-full max-w-xs rounded-xl overflow-hidden border border-gray-200 bg-gray-50 group">
+                        <img
+                          src={order.prescription_url}
+                          alt="Ordonnance"
+                          className="w-full h-40 object-cover group-hover:opacity-90 transition-opacity"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20">
+                          <Eye className="h-6 w-6 text-white" />
+                        </div>
+                      </div>
+                      <p className="flex items-center gap-1 text-xs text-primary-600 mt-1">
+                        <Eye className="h-3.5 w-3.5" />
+                        Voir en grand
+                      </p>
                     </a>
+                  )}
+
+                  {order.prescription_note && (
+                    <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 mb-4">
+                      <FileText className="h-4 w-4 inline mr-1 text-gray-400" />
+                      {order.prescription_note}
+                    </p>
                   )}
 
                   <div className="flex gap-2 pt-3 border-t border-gray-100">
                     <Button
-                      className="flex-1 gap-1.5"
+                      className="flex-1 gap-1.5 bg-green-600 hover:bg-green-700"
                       onClick={() => updatePrescriptionStatus.mutate({ id: order.id, prescription_status: 'approved' })}
                       disabled={updatePrescriptionStatus.isPending}
                     >
@@ -777,7 +754,8 @@ export default function PharmaDashboard() {
             )}
           </div>
         </TabsContent>
-        {/* Settings */}
+
+        {/* ── Paramètres ── */}
         <TabsContent value="settings">
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
             <h2 className="text-base font-semibold text-gray-900 mb-1">Paramètres de la pharmacie</h2>
@@ -786,15 +764,6 @@ export default function PharmaDashboard() {
           </div>
         </TabsContent>
       </Tabs>
-
-      {/* Modal ajout/modification médicament */}
-      {medicineModalOpen && profile?.pharmacy_id && (
-        <MedicineModal
-          pharmacyId={profile.pharmacy_id}
-          medicine={editingMedicine}
-          onClose={closeModal}
-        />
-      )}
     </div>
   );
 }
